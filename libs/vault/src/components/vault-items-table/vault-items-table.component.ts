@@ -78,12 +78,12 @@ import { I18nPipe } from "@bitwarden/ui-common";
 import { orgIconTile, personalIconTile } from "../../models/vault-icon-tile";
 import { VaultScope, VaultScopeType } from "../../models/vault-scope";
 import { VaultBatchBarService } from "../../services/vault-batch-bar.service";
-import { sharedFolderName } from "../../utils/shared-folder-name";
 import {
   ControlledAccessFilterOption,
   VAULT_CONTROLLED_ACCESS_FILTER,
   VaultControlledAccessFilter,
 } from "../../tokens/vault-controlled-access-filter.token";
+import { sharedFolderName } from "../../utils/shared-folder-name";
 import {
   idString,
   matchesFavorite,
@@ -452,9 +452,10 @@ export class VaultItemsTableComponent<C extends CipherViewLike> {
   protected readonly selection: SelectionConfig<C> = {
     multiple: true,
     max: MAX_SELECTION_COUNT,
-    // No bulk action can operate on an item that failed to decrypt. `TableSelectionModel` enforces
-    // this on `select`, so select-all skips it too.
-    canSelect: (row) => !CipherViewLikeUtils.decryptionFailure(row),
+    // No bulk action can operate on an item that failed to decrypt or on a PAM-gated ("partial")
+    // item. `TableSelectionModel` enforces this on `select`, so select-all skips them too.
+    canSelect: (row) =>
+      !CipherViewLikeUtils.decryptionFailure(row) && !CipherViewLikeUtils.isPartial(row),
   };
 
   /**
@@ -923,9 +924,14 @@ export class VaultItemsTableComponent<C extends CipherViewLike> {
     { optional: true },
   );
 
-  /** The chip's options, already localized by the host. Empty hides the chip. */
+  /**
+   * The chip's options, already localized by the host: its table set when it offers one, else its
+   * sidebar set. Empty hides the chip.
+   */
   protected readonly controlledAccessOptions = toSignal(
-    this.controlledAccessFilter?.options$ ?? of<ControlledAccessFilterOption[]>([]),
+    this.controlledAccessFilter?.tableOptions$ ??
+      this.controlledAccessFilter?.options$ ??
+      of<ControlledAccessFilterOption[]>([]),
     { initialValue: [] as ControlledAccessFilterOption[] },
   );
 
@@ -1022,17 +1028,26 @@ export class VaultItemsTableComponent<C extends CipherViewLike> {
   }
 
   /**
-   * Whether the cipher is among the selected Controlled access option's matches. Unresolved
-   * matches let every row pass, as in {@link matchesSearch}, and so does a stale option id from a
-   * bookmarked link.
+   * Whether the cipher is among any selected Controlled access option's matches: OR within the
+   * chip, AND with the other chips. Unresolved matches let every row pass, as in
+   * {@link matchesSearch}, and so does a stale option id from a bookmarked link. Also accepts a
+   * lone id, which a link from before the chip went multi-select still carries.
    */
-  private matchesControlledAccess(cipher: C, optionId: string | undefined): boolean {
-    if (optionId == null) {
+  private matchesControlledAccess(cipher: C, optionIds: string[] | string | undefined): boolean {
+    const selected = optionIds == null ? [] : Array.isArray(optionIds) ? optionIds : [optionIds];
+    if (selected.length === 0) {
       return true;
     }
     this.controlledAccessRequests.next();
-    const matches = this.controlledAccessMatches()?.get(optionId);
-    return matches === undefined || matches.has(String(cipher.id));
+    const byOption = this.controlledAccessMatches();
+    if (byOption === undefined) {
+      return true;
+    }
+    const id = String(cipher.id);
+    return selected.some((optionId) => {
+      const matches = byOption.get(optionId);
+      return matches === undefined || matches.has(id);
+    });
   }
 
   /**
